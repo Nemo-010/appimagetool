@@ -110,6 +110,22 @@ Every CLI option has a matching env var (shown above). A few extra knobs that ar
 | `OPTIMIZE_LAUNCH`    | Set to `1` to enable the DWARFS profiling pass (same as `--optimize-launch`).           |
 | `OPTIMIZE_LAUNCH_TIMEOUT` | Profiling timeout in seconds (default `10`).                                       |
 | `SKIP_INTEGRITY_CHECKS` | Set to `1` to skip the pinned uruntime SHA-256 verification.                         |
+| `SOURCE_DATE_EPOCH`  | Unix timestamp used as the mtime of every file in the image (reproducible builds).       |
+
+### Reproducible builds
+
+Set `SOURCE_DATE_EPOCH` to a unix timestamp to pin the mtime of every entry in
+the image. Without it the image inherits whatever timestamps the build host
+produced, plus the `.env` and desktop entry that appimagetool rewrites moments
+before packing, so two builds of the same AppDir differ. With `--order=path`,
+`--no-history`, `--no-create-timestamp` and pinned owner/group — all passed
+already — this makes the DWARFS image bit-identical for a given AppDir, pinned
+`mkdwarfs`/uruntime and compression settings.
+
+`OPTIMIZE_LAUNCH` does not combine with reproducibility: the profile pass
+records which files the AppImage touches while running, which varies from run
+to run. Supply a fixed `DWARFSPROF` instead if you want the categorization
+without the profiling pass.
 
 ### AppDir requirements
 

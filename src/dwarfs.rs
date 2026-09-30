@@ -66,6 +66,28 @@ pub fn resolve_mkdwarfs(config: &Config) -> Result<PathBuf> {
     Ok(cached)
 }
 
+/// Parse `SOURCE_DATE_EPOCH`, if set, for reproducible builds.
+///
+/// `mkdwarfs` records each entity's `mtime`, and the AppDir's timestamps are
+/// whatever produced them — appimagetool rewrites `.env` and the desktop entry
+/// moments before packing, so their timestamps are always "now". `--set-time`
+/// pins them all to one value; see "Producing bit-identical images" in
+/// mkdwarfs(1).
+pub(crate) fn source_date_epoch() -> Result<Option<u64>> {
+    parse_source_date_epoch(std::env::var("SOURCE_DATE_EPOCH").ok())
+}
+
+fn parse_source_date_epoch(value: Option<String>) -> Result<Option<u64>> {
+    let Some(value) = value.filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    value.parse().map(Some).map_err(|_| {
+        Error::Config(format!(
+            "SOURCE_DATE_EPOCH must be a unix timestamp in seconds, got '{value}'"
+        ))
+    })
+}
+
 /// Build a DWARFS AppImage. The runtime is embedded via `--header`.
 pub fn build_appimage(
     mkdwarfs: &Path,
@@ -76,6 +98,9 @@ pub fn build_appimage(
     profile: Option<&Path>,
 ) -> Result<()> {
     crate::log_info!("Building DWARFS AppImage...");
+
+    // A reproducible build pins every stored mtime to SOURCE_DATE_EPOCH.
+    let source_date_epoch = source_date_epoch()?;
 
     let mut cmd = Command::new(mkdwarfs);
     cmd.arg("--force")
@@ -91,6 +116,10 @@ pub fn build_appimage(
         .arg("--input")
         .arg(appdir);
 
+    if let Some(epoch) = source_date_epoch {
+        cmd.arg("--set-time").arg(epoch.to_string());
+    }
+
     // Add profile optimization if available
     if let Some(profile) = profile
         && profile.exists()
@@ -98,6 +127,13 @@ pub fn build_appimage(
         crate::log_info!("Using DWARFS profile {}...", profile.display());
         cmd.arg("--categorize=hotness")
             .arg(format!("--hotness-list={}", profile.display()));
+
+        // mkdwarfs only produces bit-identical categorized images when the
+        // number of segmenter workers is fixed; it defaults to the host's CPU
+        // count, which differs between build machines.
+        if source_date_epoch.is_some() {
+            cmd.arg("--num-segmenter-workers").arg("1");
+        }
     }
 
     // Add compression options. The string can contain multiple space-separated
@@ -328,4 +364,29 @@ fn which(name: &str) -> std::result::Result<PathBuf, ()> {
         }
     }
     Err(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_source_date_epoch;
+
+    #[test]
+    fn test_parse_source_date_epoch() {
+        assert_eq!(parse_source_date_epoch(None).unwrap(), None);
+        assert_eq!(parse_source_date_epoch(Some(String::new())).unwrap(), None);
+        assert_eq!(
+            parse_source_date_epoch(Some("1700000000".to_string())).unwrap(),
+            Some(1_700_000_000)
+        );
+    }
+
+    #[test]
+    fn test_parse_source_date_epoch_rejects_non_timestamps() {
+        for bad in ["now", "-1", "1.5", "1700000000s", " "] {
+            assert!(
+                parse_source_date_epoch(Some(bad.to_string())).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
 }
